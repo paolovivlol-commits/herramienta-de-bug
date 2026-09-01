@@ -16,6 +16,7 @@ from . import bob as bob_mod
 from . import notes as notes_mod
 from . import jsanalyze as js_mod
 from . import triage as triage_mod
+from . import judge as judge_mod
 from . import vrt as vrt_mod
 from . import programs, report, store, vrt
 from .scope import IN_SCOPE, NOT_LISTED, OUT_OF_SCOPE, check
@@ -913,6 +914,82 @@ def cmd_bob_triage(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- BOB: juez de IA
+
+
+JUDGE_COLOR = {"si": "red", "probable": "yellow", "no_demostrado": "yellow",
+               "no": "dim", "falso_positivo": "dim"}
+JUDGE_LABEL = {"si": "SI es una vulnerabilidad", "probable": "PROBABLE vulnerabilidad",
+               "no_demostrado": "AUN NO demostrado", "no": "NO es vulnerabilidad",
+               "falso_positivo": "FALSO POSITIVO probable"}
+
+
+def cmd_bob_judge(args: argparse.Namespace) -> int:
+    """Juez de IA: analiza la evidencia que TU capturaste (no toca el target)."""
+    if args.file:
+        try:
+            evidence = open(args.file, "r", encoding="utf-8", errors="replace").read()
+        except OSError as exc:
+            return err(str(exc))
+    else:
+        print(paint(f"{BOB}: pega la evidencia (request/response). Termina con Ctrl-D.", "dim"))
+        evidence = sys.stdin.read()
+    if not evidence.strip():
+        return err("no hay evidencia. Usa -f <fichero> o pega por stdin.")
+
+    if args.target and args.program:
+        with store.session() as conn:
+            slug = pick_program(conn, args.program)
+            if slug:
+                verdict = check(args.target, programs.rules_for(conn, slug), slug)
+                if verdict.status == OUT_OF_SCOPE:
+                    _print_verdict(verdict)
+                    return err("el target esta fuera de scope; no analizo evidencia de ahi.")
+
+    print(paint(f"{BOB}: analizando la evidencia con {args.model}... (esto usa red y tu clave de API)", "dim"))
+    try:
+        j = judge_mod.analyze(evidence, context=args.context or "", target=args.target or "",
+                              model=args.model, effort=args.effort)
+    except judge_mod.JudgeUnavailable as exc:
+        return err(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return err(f"el juez fallo: {exc}")
+
+    color = JUDGE_COLOR.get(j.is_vulnerability, "yellow")
+    print()
+    print(paint(f"{BOB}: {JUDGE_LABEL.get(j.is_vulnerability, j.is_vulnerability)}  "
+                f"(confianza {j.confidence}%)", color))
+    print(f"  Clase: {j.vuln_class or '?'}   Prioridad estimada: {j.priority_estimate}")
+    if j.vrt_id:
+        print(f"  VRT: {j.vrt_id}")
+    print(paint("  Analisis:", "bold"))
+    print(f"    {j.reasoning}")
+    if j.false_positive_risks:
+        print(paint("  Podria NO ser bug si:", "yellow"))
+        for r in j.false_positive_risks:
+            print(f"    - {r}")
+    if j.what_is_missing:
+        print(paint("  Falta demostrar:", "bold"))
+        for m in j.what_is_missing:
+            print(f"    - {m}")
+    if j.next_tests:
+        print(paint("  Prueba a mano despues:", "green"))
+        for t in j.next_tests:
+            print(f"    - {t}")
+    print(paint("\n  Esto es un analisis de la evidencia que TU diste, no un veredicto infalible. "
+                "Confirma a mano y revisa duplicados y reglas del programa.", "dim"))
+
+    if args.save and args.program:
+        with store.session() as conn:
+            slug = pick_program(conn, args.program)
+            if slug:
+                txt = (f"[juez IA {j.model}] {JUDGE_LABEL.get(j.is_vulnerability)} ({j.confidence}%). "
+                       f"{j.vuln_class}. {j.reasoning[:400]}")
+                nid = notes_mod.add(conn, slug, txt, args.target or "", "", "testing")
+                print(paint(f"  {BOB}: guardado en tu cuaderno como nota #{nid}.", "dim"))
+    return 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -1125,6 +1202,16 @@ def build_parser() -> argparse.ArgumentParser:
     btr.add_argument("-a", "--answer", action="append",
                      help="responde sin interactivo, p.ej. -a crossuser=y -a sensitive=y (repetible)")
     btr.set_defaults(func=cmd_bob_triage)
+
+    bju = bob.add_parser("judge", help="juez de IA: analiza la evidencia que capturaste (usa la API de Claude)")
+    bju.add_argument("-f", "--file", help="fichero con la evidencia (request/response); si se omite, lee de stdin")
+    bju.add_argument("-p", "--program", help="programa (para validar scope y guardar la nota)")
+    bju.add_argument("--target", help="url del target (se valida contra el scope)")
+    bju.add_argument("--context", help="que sospechas u observaste")
+    bju.add_argument("--model", default=judge_mod.DEFAULT_MODEL, help="modelo de Claude a usar")
+    bju.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
+    bju.add_argument("--save", action="store_true", help="guarda el veredicto en el cuaderno")
+    bju.set_defaults(func=cmd_bob_judge)
 
     return parser
 

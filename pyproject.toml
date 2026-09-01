@@ -11,6 +11,9 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = []
 
+[project.optional-dependencies]
+judge = ["anthropic>=0.40"]
+
 [project.scripts]
 hdb = "hdb.cli:main"
 

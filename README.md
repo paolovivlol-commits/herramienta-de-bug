@@ -190,6 +190,43 @@ Un secreto de alto riesgo (clave AWS, `sk_live_` de Stripe) sube a lo más alto
 de la lista; una clave pública (Google, Stripe *publishable*) baja. Sigue siendo
 todo **de solo lectura y solo in-scope** — BOB señala, tú confirmas.
 
+### Juez de IA: `bob judge`
+
+Lo más preciso que tiene BOB. Le pasas la **evidencia que TÚ capturaste** (el
+request y la respuesta HTTP que obtuviste probando a mano) y un modelo de Claude
+razona sobre esa evidencia concreta: si el impacto es real, con qué confianza,
+qué falta demostrar y qué probar después.
+
+```bash
+# desde un fichero con tu request/response, o pegándolo por stdin
+hdb bob judge -f evidencia.txt -p tesla --target https://api.tesla.com/orders/124 \
+  --context "cambié mi id 123 por 124 y vi el pedido de otro usuario"
+```
+
+```
+🤖 BOB: SI es una vulnerabilidad  (confianza 88%)
+  Clase: IDOR   Prioridad estimada: P1
+  Analisis: la respuesta a /orders/124 devuelve datos de otro usuario (owner distinto)...
+  Podria NO ser bug si:
+    - los datos fueran realmente tuyos y el 'owner' fuera un alias
+  Falta demostrar:
+    - que el id es iterable a escala (probar 125, 126...)
+  Prueba a mano despues:
+    - repetir con una tercera cuenta para descartar coincidencia
+```
+
+**Requisitos y límites:**
+- Necesita el paquete `anthropic` y credenciales: `pip install "hdb[judge]"` y
+  `export ANTHROPIC_API_KEY=sk-ant-...` (o `ant auth login`). Es la **única**
+  parte de hdb que usa red hacia un LLM; el resto funciona offline.
+- **El juez NO toca el target.** Solo analiza el texto que tú ya obtuviste
+  legítimamente durante tu testing autorizado.
+- Es un análisis experto de tu evidencia, **no un veredicto infalible**: es
+  escéptico a propósito (te marca los riesgos de falso positivo), pero la
+  confirmación y la decisión de reportar siguen siendo tuyas.
+
+Con `--save` guarda el veredicto en tu cuaderno como nota en estado `testing`.
+
 ### "¿Esto es importante?" — `bob triage`
 
 BOB **no ha visto tu target**, así que no puede jurarte que un hallazgo sea real
