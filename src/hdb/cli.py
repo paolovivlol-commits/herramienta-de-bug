@@ -996,6 +996,113 @@ def cmd_bob_judge(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- BOB: capturar evidencia y estado
+
+
+def _evidence_dir(slug: str):
+    from pathlib import Path
+    d = Path(store.home()) / "evidence" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cmd_bob_capture(args: argparse.Namespace) -> int:
+    """Guarda la evidencia que capturaste (pega de Burp) y opcionalmente la juzga."""
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+    if args.file:
+        try:
+            evidence = open(args.file, "r", encoding="utf-8", errors="replace").read()
+        except OSError as exc:
+            return err(str(exc))
+    else:
+        print(paint(f"{BOB}: pega el request/response (de Burp, curl, etc.). Termina con Ctrl-D.", "dim"))
+        evidence = sys.stdin.read()
+    if not evidence.strip():
+        return err("no capturaste nada.")
+
+    stamp = store.now().replace(":", "").replace("-", "")
+    path = _evidence_dir(slug) / f"{stamp}.txt"
+    header = f"# programa: {slug}\n# target: {args.target or ''}\n# capturado: {store.now()}\n"
+    if args.context:
+        header += f"# contexto: {args.context}\n"
+    path.write_text(header + "\n" + evidence, encoding="utf-8")
+    print(paint(f"{BOB}: evidencia guardada en {path}", "green"))
+
+    with store.session() as conn:
+        note = f"Evidencia capturada: {path.name}. {args.context or ''}".strip()
+        nid = notes_mod.add(conn, slug, note, args.target or "", args.playbook or "", "testing")
+        print(paint(f"  anotado en tu cuaderno como #{nid} (estado: testing).", "dim"))
+
+    if args.judge:
+        print(paint(f"\n{BOB}: se la paso al juez ({args.backend})...", "dim"))
+        try:
+            j = judge_mod.analyze(evidence, context=args.context or "", target=args.target or "",
+                                  model=args.model, effort="high",
+                                  backend=args.backend, ollama_host=args.ollama_host)
+        except judge_mod.JudgeUnavailable as exc:
+            return err(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return err(f"el juez fallo: {exc}")
+        color = JUDGE_COLOR.get(j.is_vulnerability, "yellow")
+        print(paint(f"{BOB}: {JUDGE_LABEL.get(j.is_vulnerability, j.is_vulnerability)} "
+                    f"(confianza {j.confidence}%)  {j.vuln_class} / {j.priority_estimate}", color))
+        print(f"  {j.reasoning}")
+        if j.next_tests:
+            print(paint("  Prueba despues:", "green"))
+            for t in j.next_tests:
+                print(f"    - {t}")
+        cost = "$0.00 (local)" if j.model.startswith("ollama:") else f"~${j.cost_usd:.4f}"
+        print(paint(f"  Coste: {cost}", "dim"))
+    else:
+        print(paint(f"  Juzgala cuando quieras: hdb bob judge -f {path} -p {slug}", "dim"))
+    return 0
+
+
+def cmd_bob_status(args: argparse.Namespace) -> int:
+    """Resumen de por donde vas: notas y hallazgos por programa."""
+    with store.session() as conn:
+        if args.program:
+            slug = pick_program(conn, args.program)
+            if not slug:
+                return 2
+            slugs = [slug]
+        else:
+            rows = conn.execute(
+                """SELECT DISTINCT program_slug FROM (
+                     SELECT program_slug FROM notes UNION SELECT program_slug FROM findings
+                   ) ORDER BY program_slug"""
+            ).fetchall()
+            slugs = [r["program_slug"] for r in rows]
+        if not slugs:
+            print(f"{BOB}: aun no hay actividad. Empieza con: hdb bob hunt <url> -p <prog>")
+            return 0
+        print(paint(f"{BOB}: resumen de tu caza", "bold"))
+        for slug in slugs:
+            notes = conn.execute(
+                "SELECT status, COUNT(*) c FROM notes WHERE program_slug=? GROUP BY status", (slug,)
+            ).fetchall()
+            nmap = {r["status"]: r["c"] for r in notes}
+            finds = conn.execute(
+                "SELECT status, COUNT(*) c FROM findings WHERE program_slug=? GROUP BY status", (slug,)
+            ).fetchall()
+            fmap = {r["status"]: r["c"] for r in finds}
+            open_n = nmap.get("todo", 0) + nmap.get("testing", 0)
+            conf = nmap.get("confirmed", 0)
+            print(paint(f"\n  {slug}", "bold"))
+            print(f"    cuaderno: {open_n} abiertos ({nmap.get('testing',0)} en curso, "
+                  f"{nmap.get('todo',0)} pendientes), {conf} confirmados, "
+                  f"{nmap.get('clear',0)} descartados")
+            if fmap:
+                parts = ", ".join(f"{k}:{v}" for k, v in sorted(fmap.items()))
+                print(f"    hallazgos: {parts}")
+            if conf and not fmap:
+                print(paint("    tienes confirmados sin reporte: hdb bob found <playbook> -p " + slug, "yellow"))
+    return 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -1221,6 +1328,22 @@ def build_parser() -> argparse.ArgumentParser:
     bju.add_argument("--ollama-host", default="http://localhost:11434", help="host de Ollama")
     bju.add_argument("--save", action="store_true", help="guarda el veredicto en el cuaderno")
     bju.set_defaults(func=cmd_bob_judge)
+
+    bc = bob.add_parser("capture", help="guarda la evidencia que capturaste (Burp/curl) y opcionalmente la juzga")
+    bc.add_argument("-p", "--program", required=True)
+    bc.add_argument("-f", "--file", help="fichero con la evidencia; si se omite, lee de stdin")
+    bc.add_argument("--target")
+    bc.add_argument("--context")
+    bc.add_argument("--playbook")
+    bc.add_argument("--judge", action="store_true", help="analizala con el juez al guardarla")
+    bc.add_argument("--backend", default="anthropic", choices=["anthropic", "ollama"])
+    bc.add_argument("--ollama-host", default="http://localhost:11434")
+    bc.add_argument("--model", default=judge_mod.DEFAULT_MODEL)
+    bc.set_defaults(func=cmd_bob_capture)
+
+    bs = bob.add_parser("status", help="resumen de por donde vas en cada programa")
+    bs.add_argument("-p", "--program", help="limita a un programa")
+    bs.set_defaults(func=cmd_bob_status)
 
     return parser
 

@@ -282,6 +282,37 @@ Clases con tasación: `idor`, `auth`, `cors`, `redirect`, `secrets`, `ssrf`.
 busca duplicados, relee las reglas del programa, y que esto se basa en lo que TÚ
 le dijiste — no en haber visto el target. La decisión final es tuya.
 
+### Capturar evidencia: `bob capture`
+
+Cuando encuentras algo, guarda el request/response (pégalo de Burp o curl) para
+tenerlo ordenado y, si quieres, mándaselo al juez en el mismo paso:
+
+```bash
+# pega la evidencia por stdin, o pásala con -f
+hdb bob capture -p tesla --target https://api.tesla.com/orders/124 \
+  --context "cambié 123 por 124 y vi datos de otro" --playbook idor --judge --backend ollama
+```
+
+Guarda la evidencia en `~/.hdb/evidence/<programa>/`, la anota en tu cuaderno en
+estado `testing`, y con `--judge` la analiza al vuelo (usa `--backend ollama`
+para que sea gratis). Sin `--judge`, te deja el comando listo para juzgarla luego.
+
+### Resumen de sesión: `bob status`
+
+Por dónde vas en cada programa, de un vistazo:
+
+```bash
+hdb bob status
+# 🤖 BOB: resumen de tu caza
+#   tesla
+#     cuaderno: 3 abiertos (1 en curso, 2 pendientes), 1 confirmados, 4 descartados
+#     hallazgos: draft:1
+#     tienes confirmados sin reporte: hdb bob found <playbook> -p tesla
+```
+
+Te dice qué tienes abierto, qué confirmaste y te empuja a reportar lo confirmado
+que aún no tiene reporte. Pásale `-p <programa>` para ver solo uno.
+
 ### El cuaderno de caza
 
 Mientras pruebas, BOB te lleva la cuenta de qué falta y qué confirmaste.
