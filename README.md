@@ -225,6 +225,13 @@ hdb bob judge -f evidencia.txt -p tesla --target https://api.tesla.com/orders/12
   escéptico a propósito (te marca los riesgos de falso positivo), pero la
   confirmación y la decisión de reportar siguen siendo tuyas.
 
+**Coste:** `bob judge` es lo **único** de hdb que cuesta dinero, porque llama a
+la API de Claude (facturación por uso, aparte de cualquier suscripción de
+claude.ai). Una consulta típica cuesta **~$0.05–0.15** con `claude-opus-5`. BOB
+te muestra el coste real de cada consulta (tokens + USD). Para gastar menos:
+`--model claude-haiku-4-5` (~$0.01) o `--effort low`. **Todo lo demás de hdb es
+gratis y offline.**
+
 Con `--save` guarda el veredicto en tu cuaderno como nota en estado `testing`.
 
 ### "¿Esto es importante?" — `bob triage`

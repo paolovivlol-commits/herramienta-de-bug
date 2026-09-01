@@ -976,7 +976,10 @@ def cmd_bob_judge(args: argparse.Namespace) -> int:
         print(paint("  Prueba a mano despues:", "green"))
         for t in j.next_tests:
             print(f"    - {t}")
-    print(paint("\n  Esto es un analisis de la evidencia que TU diste, no un veredicto infalible. "
+    if j.input_tokens or j.output_tokens:
+        print(paint(f"\n  Coste de esta consulta: ~${j.cost_usd:.4f} "
+                    f"({j.input_tokens} tokens entrada + {j.output_tokens} salida, {j.model})", "dim"))
+    print(paint("  Esto es un analisis de la evidencia que TU diste, no un veredicto infalible. "
                 "Confirma a mano y revisa duplicados y reglas del programa.", "dim"))
 
     if args.save and args.program:

@@ -21,6 +21,20 @@ from typing import List, Optional
 
 DEFAULT_MODEL = "claude-opus-5"
 
+# USD por millon de tokens: (entrada, salida). El pensamiento se factura como
+# salida. Precios de referencia; confirma los vigentes en anthropic.com/pricing.
+PRICING = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    price_in, price_out = PRICING.get(model, (5.0, 25.0))
+    return input_tokens / 1_000_000 * price_in + output_tokens / 1_000_000 * price_out
+
 SYSTEM_PROMPT = """\
 Eres un triager senior de Bugcrowd que evalua hallazgos de bug bounty. Un \
 investigador te trae EVIDENCIA que ya capturo durante su testing autorizado \
@@ -96,6 +110,9 @@ class Judgment:
     next_tests: List[str] = field(default_factory=list)
     false_positive_risks: List[str] = field(default_factory=list)
     model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
     @classmethod
     def from_dict(cls, d: dict, model: str = "") -> "Judgment":
@@ -191,4 +208,10 @@ def analyze(
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise JudgeUnavailable(f"respuesta del modelo no es JSON valido: {exc}") from exc
-    return Judgment.from_dict(data, model=model)
+    j = Judgment.from_dict(data, model=model)
+    usage = getattr(message, "usage", None)
+    if usage is not None:
+        j.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        j.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        j.cost_usd = estimate_cost(model, j.input_tokens, j.output_tokens)
+    return j
