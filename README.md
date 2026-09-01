@@ -190,6 +190,39 @@ Un secreto de alto riesgo (clave AWS, `sk_live_` de Stripe) sube a lo más alto
 de la lista; una clave pública (Google, Stripe *publishable*) baja. Sigue siendo
 todo **de solo lectura y solo in-scope** — BOB señala, tú confirmas.
 
+### "¿Esto es importante?" — `bob triage`
+
+BOB **no ha visto tu target**, así que no puede jurarte que un hallazgo sea real
+con solo mirarlo. Lo que sí hace: te tasa el hallazgo con preguntas de sí/no
+sobre lo que TÚ observaste, y mapea tus respuestas a la taxonomía de Bugcrowd.
+
+```bash
+hdb bob triage idor
+# 🤖 BOB: ¿Accediste a datos de OTRA cuenta (no la tuya)? [s/n] s
+# 🤖 BOB: ¿Esos datos son sensibles (PII, financieros)?   [s/n] s
+# 🤖 BOB: ¿Puedes MODIFICARLOS (no solo verlos)?           [s/n] s
+# 🤖 BOB: ¿El identificador es predecible/iterable?        [s/n] s
+#
+# 🤖 BOB: SI, importante
+#   Prioridad estimada: P1 - Critical
+#   VRT: broken_access_control.idor.modify_view_sensitive_information_iterable_object_identifiers
+```
+
+Cambia una respuesta y el veredicto cambia: si el id es un UUID no adivinable
+baja a P4; si no probaste acceso cross-cuenta, BOB te dice que aún no está
+demostrado; si la "clave" que hallaste es pública por diseño, te dice que
+probablemente no es elegible. También puedes responder sin interactivo:
+
+```bash
+hdb bob triage idor -a crossuser=y -a sensitive=y -a modify=y -a iterable=n
+```
+
+Clases con tasación: `idor`, `auth`, `cors`, `redirect`, `secrets`, `ssrf`.
+
+**El veredicto vale lo que valgan tus respuestas.** BOB siempre te recuerda:
+busca duplicados, relee las reglas del programa, y que esto se basa en lo que TÚ
+le dijiste — no en haber visto el target. La decisión final es tuya.
+
 ### El cuaderno de caza
 
 Mientras pruebas, BOB te lleva la cuenta de qué falta y qué confirmaste.

@@ -15,6 +15,7 @@ from . import surface as surface_mod
 from . import bob as bob_mod
 from . import notes as notes_mod
 from . import jsanalyze as js_mod
+from . import triage as triage_mod
 from . import vrt as vrt_mod
 from . import programs, report, store, vrt
 from .scope import IN_SCOPE, NOT_LISTED, OUT_OF_SCOPE, check
@@ -855,6 +856,63 @@ def cmd_bob_js(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- BOB: tasar un hallazgo
+
+
+def _parse_answers(pairs: List[str]) -> dict:
+    out = {}
+    for pair in pairs or []:
+        if "=" not in pair:
+            continue
+        k, _, v = pair.partition("=")
+        out[k.strip()] = v.strip().lower() in ("y", "yes", "s", "si", "1", "true", "t")
+    return out
+
+
+def cmd_bob_triage(args: argparse.Namespace) -> int:
+    """BOB tasa un hallazgo: te pregunta hechos y da un veredicto fundamentado."""
+    try:
+        assessor = triage_mod.ASSESSORS[args.playbook]
+    except KeyError:
+        return err(f"'{args.playbook}' no tiene tasacion. Disponibles: {', '.join(triage_mod.available())}")
+
+    preset = _parse_answers(args.answer)
+    answers = {}
+    interactive = sys.stdin.isatty() and not args.answer
+    for q in assessor.questions:
+        if q.key in preset:
+            answers[q.key] = preset[q.key]
+            continue
+        if interactive:
+            try:
+                resp = input(paint(f"{BOB}: {q.text} [s/n] ", "bold")).strip().lower()
+            except EOFError:
+                resp = ""
+            answers[q.key] = resp in ("s", "si", "y", "yes", "1")
+        else:
+            answers[q.key] = False  # sin respuesta = conservador (no asumir impacto)
+
+    v = triage_mod.assess(args.playbook, answers)
+
+    color = "green" if v.priority in (1, 2, 3) and v.eligible else ("yellow" if v.eligible else "red")
+    print()
+    print(paint(f"{BOB}: {v.headline}", color))
+    print(f"  Prioridad estimada: {v.priority_label}")
+    print(f"  VRT: {v.vrt_id}")
+    if v.reasons:
+        print(paint("  Por que:", "bold"))
+        for r in v.reasons:
+            print(f"    - {r}")
+    if v.warnings:
+        print(paint("  Antes de reportar:", "yellow"))
+        for w in v.warnings:
+            print(f"    - {w}")
+    if v.eligible and v.priority is not None:
+        print(paint(f"\n  Si lo confirmas: hdb bob found {args.playbook} -p <prog> "
+                    f"--vrt {v.vrt_id} --priority {v.priority} --target <url> --title \"...\"", "dim"))
+    return 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -1061,6 +1119,12 @@ def build_parser() -> argparse.ArgumentParser:
     bj.add_argument("--delay", type=float, default=1.0)
     bj.add_argument("--timeout", type=int, default=20)
     bj.set_defaults(func=cmd_bob_js)
+
+    btr = bob.add_parser("triage", help="tasa un hallazgo: preguntas de si/no -> veredicto y prioridad fundamentada")
+    btr.add_argument("playbook", help=f"clase del bug: {', '.join(triage_mod.available())}")
+    btr.add_argument("-a", "--answer", action="append",
+                     help="responde sin interactivo, p.ej. -a crossuser=y -a sensitive=y (repetible)")
+    btr.set_defaults(func=cmd_bob_triage)
 
     return parser
 
