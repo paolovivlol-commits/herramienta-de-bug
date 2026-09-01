@@ -232,6 +232,21 @@ te muestra el coste real de cada consulta (tokens + USD). Para gastar menos:
 `--model claude-haiku-4-5` (~$0.01) o `--effort low`. **Todo lo demás de hdb es
 gratis y offline.**
 
+**Opción GRATIS — modelo local con Ollama:** si no quieres pagar la API, corre
+el juez con un modelo en tu propia máquina. Cero coste por consulta y la
+evidencia **nunca sale de tu equipo** (ideal para datos de un target):
+
+```bash
+# una vez: instala Ollama (ollama.com) y baja un modelo
+ollama pull llama3.1
+# luego, gratis y offline:
+hdb bob judge -f evidencia.txt --backend ollama --model llama3.1
+# 🤖 BOB: ...  Coste: $0.00 (modelo local ollama:llama3.1, la evidencia no salio de tu maquina)
+```
+
+Un modelo local acierta menos que `claude-opus-5`, pero para un primer filtro no
+cuesta nada. Y recuerda: `bob triage` ya te da un juicio gratis sin ningún modelo.
+
 Con `--save` guarda el veredicto en tu cuaderno como nota en estado `testing`.
 
 ### "¿Esto es importante?" — `bob triage`

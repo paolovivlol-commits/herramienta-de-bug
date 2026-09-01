@@ -143,3 +143,44 @@ def test_analyze_reports_usage_and_cost(monkeypatch):
     j = judge.analyze("evidencia", model="claude-opus-5")
     assert j.input_tokens == 2000 and j.output_tokens == 1000
     assert j.cost_usd > 0
+
+
+def test_ollama_backend_is_free(monkeypatch):
+    import io, json as _json
+    from hdb import judge as _judge
+    payload = {
+        "is_vulnerability": "probable", "confidence": 60, "vuln_class": "IDOR",
+        "vrt_id": "broken_access_control.idor.x", "priority_estimate": "P3",
+        "reasoning": "posible acceso cruzado", "what_is_missing": [], "next_tests": [],
+        "false_positive_risks": [],
+    }
+    server_resp = _json.dumps({"message": {"content": _json.dumps(payload)}}).encode()
+
+    captured = {}
+    def fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["body"] = _json.loads(req.data.decode())
+        class R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return server_resp
+        return R()
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    j = _judge.analyze("REQ/RESP", backend="ollama", model="llama3.1")
+    assert j.cost_usd == 0.0
+    assert j.model == "ollama:llama3.1"
+    assert j.is_vulnerability == "probable"
+    assert captured["url"].endswith("/api/chat")
+    assert captured["body"]["model"] == "llama3.1"
+
+
+def test_ollama_connection_error_is_friendly(monkeypatch):
+    import urllib.error
+    from hdb import judge as _judge
+    def boom(req, timeout=0):
+        raise urllib.error.URLError("connection refused")
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    import pytest
+    with pytest.raises(_judge.JudgeUnavailable):
+        _judge.analyze("evidencia", backend="ollama")

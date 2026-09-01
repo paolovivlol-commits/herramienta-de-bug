@@ -949,7 +949,8 @@ def cmd_bob_judge(args: argparse.Namespace) -> int:
     print(paint(f"{BOB}: analizando la evidencia con {args.model}... (esto usa red y tu clave de API)", "dim"))
     try:
         j = judge_mod.analyze(evidence, context=args.context or "", target=args.target or "",
-                              model=args.model, effort=args.effort)
+                              model=args.model, effort=args.effort,
+                              backend=args.backend, ollama_host=args.ollama_host)
     except judge_mod.JudgeUnavailable as exc:
         return err(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -976,7 +977,9 @@ def cmd_bob_judge(args: argparse.Namespace) -> int:
         print(paint("  Prueba a mano despues:", "green"))
         for t in j.next_tests:
             print(f"    - {t}")
-    if j.input_tokens or j.output_tokens:
+    if j.model.startswith("ollama:"):
+        print(paint(f"\n  Coste: $0.00 (modelo local {j.model}, la evidencia no salio de tu maquina)", "dim"))
+    elif j.input_tokens or j.output_tokens:
         print(paint(f"\n  Coste de esta consulta: ~${j.cost_usd:.4f} "
                     f"({j.input_tokens} tokens entrada + {j.output_tokens} salida, {j.model})", "dim"))
     print(paint("  Esto es un analisis de la evidencia que TU diste, no un veredicto infalible. "
@@ -1213,6 +1216,9 @@ def build_parser() -> argparse.ArgumentParser:
     bju.add_argument("--context", help="que sospechas u observaste")
     bju.add_argument("--model", default=judge_mod.DEFAULT_MODEL, help="modelo de Claude a usar")
     bju.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
+    bju.add_argument("--backend", default="anthropic", choices=["anthropic", "ollama"],
+                     help="anthropic = API de pago; ollama = modelo local GRATIS")
+    bju.add_argument("--ollama-host", default="http://localhost:11434", help="host de Ollama")
     bju.add_argument("--save", action="store_true", help="guarda el veredicto en el cuaderno")
     bju.set_defaults(func=cmd_bob_judge)
 

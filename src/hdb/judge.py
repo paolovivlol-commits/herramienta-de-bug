@@ -8,9 +8,13 @@ Limite importante: el juez NO hace peticiones al target. Solo analiza texto que
 tu ya obtuviste legitimamente. No sustituye tu criterio ni las reglas del
 programa; es un segundo par de ojos experto.
 
-Requiere el paquete `anthropic` y credenciales (ANTHROPIC_API_KEY o un perfil de
-`ant auth login`). Es la unica parte de hdb que usa red hacia un LLM; todo lo
-demas funciona offline.
+Dos backends:
+- `anthropic` (por defecto): usa la API de Claude (de pago, ~$0.05-0.15/consulta).
+- `ollama` (gratis): usa un modelo que corre en TU maquina via Ollama. Cero coste
+  por consulta y la evidencia nunca sale de tu equipo. Instala Ollama, baja un
+  modelo (p.ej. `ollama pull llama3.1`) y usa `--backend ollama`.
+
+Ambos analizan SOLO la evidencia que tu aportas; ninguno toca el target.
 """
 
 from __future__ import annotations
@@ -172,6 +176,48 @@ def build_prompt(evidence: str, context: str = "", target: str = "") -> str:
     return "\n\n".join(parts)
 
 
+OLLAMA_DEFAULT_MODEL = "llama3.1"
+
+
+def _ollama_analyze(evidence: str, context: str, target: str, model: str,
+                    host: str, max_tokens: int) -> Judgment:
+    """Analiza con un modelo local via Ollama. Gratis; no sale de tu maquina."""
+    import urllib.error
+    import urllib.request
+
+    prompt = build_prompt(evidence, context, target)
+    body = json.dumps({
+        "model": model,
+        "stream": False,
+        "format": RESULT_SCHEMA,  # Ollama moderno acepta un JSON schema
+        "options": {"num_predict": max_tokens},
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode("utf-8")
+    url = host.rstrip("/") + "/api/chat"
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise JudgeUnavailable(
+            f"no pude conectar con Ollama en {host}. ¿Esta corriendo? Instala Ollama, "
+            f"ejecuta 'ollama pull {model}' y arranca el servicio."
+        ) from exc
+    text = (payload.get("message") or {}).get("content", "")
+    if not text:
+        raise JudgeUnavailable("Ollama no devolvio contenido; prueba otro modelo.")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise JudgeUnavailable(f"el modelo local no devolvio JSON valido: {exc}") from exc
+    j = Judgment.from_dict(data, model=f"ollama:{model}")
+    j.cost_usd = 0.0  # local = gratis
+    return j
+
+
 def analyze(
     evidence: str,
     context: str = "",
@@ -179,10 +225,15 @@ def analyze(
     model: str = DEFAULT_MODEL,
     effort: str = "high",
     max_tokens: int = 8000,
+    backend: str = "anthropic",
+    ollama_host: str = "http://localhost:11434",
 ) -> Judgment:
     """Envia la evidencia al modelo y devuelve el veredicto estructurado."""
     if not evidence.strip():
         raise ValueError("no hay evidencia que analizar")
+    if backend == "ollama":
+        local_model = model if model != DEFAULT_MODEL else OLLAMA_DEFAULT_MODEL
+        return _ollama_analyze(evidence, context, target, local_model, ollama_host, max_tokens)
     client = _client()
     prompt = build_prompt(evidence, context, target)
 
