@@ -171,6 +171,39 @@ BOB hereda el VRT y la prioridad del playbook, valida que el target esté en
 scope, y genera el reporte. Rellenas los pasos y el impacto, y lo envías con
 `hdb submit`.
 
+### El cuaderno de caza
+
+Mientras pruebas, BOB te lleva la cuenta de qué falta y qué confirmaste.
+`hdb bob review` ya siembra el cuaderno con los puntos que detecta.
+
+```bash
+hdb bob note "revisar IDOR en /api/orders" -p tesla --target https://app.tesla.com/api/orders/1 --playbook idor
+hdb bob todo -p tesla        # que tienes abierto, en curso y confirmado
+hdb bob mark 1 testing       # lo estas probando
+hdb bob mark 1 confirmed     # ¡bug! BOB te da el comando para reportarlo
+```
+
+Estados: `todo` (pendiente), `testing` (probándolo), `confirmed` (bug),
+`clear` (probado, nada), `skip` (descartado). El cuaderno ordena lo abierto
+primero para que no pierdas el hilo entre sesiones.
+
+### Análisis de ficheros JS (solo lectura)
+
+Los `.js` que `bob review` detecta suelen filtrar claves y endpoints internos.
+BOB los descarga y busca patrones — **sin ejecutarlos ni probar las claves**:
+
+```bash
+hdb bob js https://app.tesla.com/main.js -p tesla --endpoints
+```
+
+Detecta claves de AWS/Google/Slack/GitHub/Stripe, JWT, claves privadas y
+asignaciones tipo `api_key=...`, más endpoints internos (`/api/`, `/admin/`).
+Solo escanea ficheros in-scope y enmascara los valores en pantalla.
+
+**Un match es una PISTA, no un bug.** Muchas claves públicas (Google Maps,
+Stripe *publishable*) son inofensivas por diseño: verifica alcance y validez a
+mano antes de reportar. BOB te lo recuerda en cada corrida.
+
 ### Consultarle sobre la marcha
 
 Mientras cazas, pregúntale a BOB qué probar en cualquier cosa que veas:

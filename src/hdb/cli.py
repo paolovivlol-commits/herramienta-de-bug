@@ -13,6 +13,8 @@ from . import scan as scan_mod
 from . import playbooks as pb_mod
 from . import surface as surface_mod
 from . import bob as bob_mod
+from . import notes as notes_mod
+from . import jsanalyze as js_mod
 from . import vrt as vrt_mod
 from . import programs, report, store, vrt
 from .scope import IN_SCOPE, NOT_LISTED, OUT_OF_SCOPE, check
@@ -633,6 +635,10 @@ def cmd_bob_review(args: argparse.Namespace) -> int:
         print(f"     {cp.why}")
         print(paint(f"     playbook: hdb playbook show {pb.id}", "dim"))
         print(paint(f"     si lo confirmas: hdb bob found {pb.id} -p {slug} --target \"{cp.where}\" --title \"...\"", "dim"))
+    with store.session() as conn:
+        seeded = notes_mod.seed_from_points(conn, slug, rv.critical_points)
+    if seeded:
+        print(paint(f"\n{BOB}: apunte {seeded} punto(s) en tu cuaderno. Velos con: hdb bob todo -p {slug}", "green"))
     print(paint(f"\n{BOB}: recuerda, yo solo señalo. El testing lo haces tu, a mano y en scope.", "dim"))
     return 0
 
@@ -678,6 +684,114 @@ def cmd_bob_found(args: argparse.Namespace) -> int:
         fh.write(body)
     print(f"  reporte inicial: {out}")
     print(paint(f"  {BOB}: rellena los pasos y el impacto, luego: hdb submit {fid} --check-securitytxt", "dim"))
+    return 0
+
+
+# --------------------------------------------------------------------------- BOB: cuaderno y JS
+
+
+NOTE_ICON = {"todo": "[ ]", "testing": "[~]", "confirmed": "[!]", "clear": "[x]", "skip": "[-]"}
+NOTE_COLOR = {"todo": "yellow", "testing": "bold", "confirmed": "red", "clear": "dim", "skip": "dim"}
+
+
+def cmd_bob_note(args: argparse.Namespace) -> int:
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        nid = notes_mod.add(conn, slug, " ".join(args.text), args.target or "", args.playbook or "", args.status)
+        print(paint(f"{BOB}: anotado (#{nid}).", "dim"))
+    return 0
+
+
+def cmd_bob_todo(args: argparse.Namespace) -> int:
+    with store.session() as conn:
+        program = ""
+        if args.program:
+            program = pick_program(conn, args.program) or ""
+            if not program:
+                return 2
+        rows = notes_mod.listing(conn, program, args.status or "")
+        if not rows:
+            print(f"{BOB}: el cuaderno esta vacio. Empieza con: hdb bob review <url> -p <prog>")
+            return 0
+        print(paint(f"{BOB}: tu cuaderno de caza", "bold"))
+        for r in rows:
+            icon = NOTE_ICON.get(r["status"], "[ ]")
+            color = NOTE_COLOR.get(r["status"], "dim")
+            pb = f" ({r['playbook']})" if r["playbook"] else ""
+            tgt = f"  {r['target']}" if r["target"] else ""
+            print("  " + paint(f"{icon} #{r['id']:<3}{pb}{tgt}", color))
+            print(paint(f"        {r['text']}", "dim"))
+        open_n = sum(1 for r in rows if r["status"] in ("todo", "testing"))
+        conf = sum(1 for r in rows if r["status"] == "confirmed")
+        print(paint(f"\n  {open_n} abierto(s), {conf} confirmado(s). "
+                    f"Cambia estado: hdb bob mark <id> testing|confirmed|clear|skip", "dim"))
+    return 0
+
+
+def cmd_bob_mark(args: argparse.Namespace) -> int:
+    if args.status not in notes_mod.STATUSES:
+        return err(f"estado invalido. Validos: {', '.join(notes_mod.STATUSES)}")
+    with store.session() as conn:
+        ok = notes_mod.set_status(conn, args.id, args.status, " ".join(args.text) if args.text else "")
+        if not ok:
+            return err(f"no encontre la nota #{args.id}")
+        print(paint(f"{BOB}: nota #{args.id} -> {args.status}", "dim"))
+        if args.status == "confirmed":
+            row = conn.execute("SELECT playbook, target FROM notes WHERE id = ?", (args.id,)).fetchone()
+            hint = f"hdb bob found {row['playbook'] or '<playbook>'} -p ... --target \"{row['target'] or ''}\" --title \"...\""
+            print(paint(f"{BOB}: ¡bien! cuando quieras el reporte: {hint}", "green"))
+    return 0
+
+
+def cmd_bob_js(args: argparse.Namespace) -> int:
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        rules = programs.rules_for(conn, slug)
+        if not rules:
+            return err(f"el programa {slug} no tiene targets guardados (ejecuta: hdb sync)")
+
+    targets = args.urls or read_lines(None)
+    if not targets:
+        return err("pasa una o mas urls de ficheros .js (o por stdin)")
+
+    print(paint(f"{BOB}: analizo JS (solo lectura). Un match es una PISTA, verificala a mano.\n", "dim"))
+    total_secrets = 0
+    for url in targets:
+        verdict = check(url, rules, slug)
+        if verdict.status == OUT_OF_SCOPE:
+            print(paint(f"SALTADO {url} ({verdict.reason()})", "yellow"))
+            continue
+        rep = js_mod.analyze_url(url, timeout=args.timeout)
+        if rep.error:
+            print(paint(f"  {url}: {rep.error}", "dim"))
+            continue
+        print(paint(f"{url}  ({rep.size} bytes)", "bold"))
+        if rep.secrets:
+            print(paint(f"  posibles secretos ({len(rep.secrets)}):", "red"))
+            for h in rep.secrets:
+                total_secrets += 1
+                print("    " + paint(f"{h.label}: {h.value}", "red"))
+                print(paint(f"        {h.note}", "dim"))
+        eps = [h for h in rep.hits if h.kind == "endpoint"]
+        if eps and args.endpoints:
+            print(paint(f"  endpoints internos ({len(eps)}):", "green"))
+            for h in eps:
+                print(f"    {h.value}")
+        urls = [h for h in rep.hits if h.kind == "url"]
+        if urls and args.urls_out:
+            print(paint(f"  urls referenciadas ({len(urls)}):", "dim"))
+            for h in urls:
+                print(f"    {h.value}")
+        if not rep.secrets and not (args.endpoints or args.urls_out):
+            print(paint(f"    sin secretos evidentes. Endpoints: --endpoints  urls: --urls-out", "dim"))
+        time.sleep(args.delay)
+    if total_secrets:
+        print(paint(f"\n{BOB}: {total_secrets} pista(s) de secreto. Verifica alcance y validez ANTES de reportar; "
+                    "muchas claves publicas son inofensivas.", "yellow"))
     return 0
 
 
@@ -849,6 +963,34 @@ def build_parser() -> argparse.ArgumentParser:
     bf.add_argument("-o", "--output")
     bf.add_argument("--force", action="store_true")
     bf.set_defaults(func=cmd_bob_found)
+
+    bn = bob.add_parser("note", help="apunta algo en el cuaderno de caza")
+    bn.add_argument("text", nargs="+")
+    bn.add_argument("-p", "--program", required=True)
+    bn.add_argument("--target")
+    bn.add_argument("--playbook")
+    bn.add_argument("--status", choices=list(notes_mod.STATUSES), default="todo")
+    bn.set_defaults(func=cmd_bob_note)
+
+    bt = bob.add_parser("todo", help="muestra el cuaderno: que falta probar y que confirmaste")
+    bt.add_argument("-p", "--program")
+    bt.add_argument("--status", choices=list(notes_mod.STATUSES))
+    bt.set_defaults(func=cmd_bob_todo)
+
+    bm = bob.add_parser("mark", help="cambia el estado de una nota (testing/confirmed/clear/skip)")
+    bm.add_argument("id", type=int)
+    bm.add_argument("status", choices=list(notes_mod.STATUSES))
+    bm.add_argument("text", nargs="*", help="texto opcional para actualizar la nota")
+    bm.set_defaults(func=cmd_bob_mark)
+
+    bj = bob.add_parser("js", help="analiza ficheros JS in-scope en busca de secretos y endpoints (solo lectura)")
+    bj.add_argument("urls", nargs="*", help="urls de .js; si se omite, lee de stdin")
+    bj.add_argument("-p", "--program", required=True)
+    bj.add_argument("--endpoints", action="store_true", help="muestra los endpoints internos hallados")
+    bj.add_argument("--urls-out", action="store_true", help="muestra las urls referenciadas")
+    bj.add_argument("--delay", type=float, default=1.0)
+    bj.add_argument("--timeout", type=int, default=20)
+    bj.set_defaults(func=cmd_bob_js)
 
     return parser
 

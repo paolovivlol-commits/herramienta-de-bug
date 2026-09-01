@@ -61,6 +61,18 @@ CREATE TABLE IF NOT EXISTS findings (
     updated_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS notes (
+    id           INTEGER PRIMARY KEY,
+    program_slug TEXT NOT NULL,
+    target       TEXT,
+    playbook     TEXT,
+    status       TEXT NOT NULL DEFAULT 'todo',
+    text         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_program ON notes(program_slug);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -68,6 +80,7 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 FINDING_STATUSES = ("draft", "submitted", "triaged", "accepted", "duplicate", "not_applicable", "resolved")
+NOTE_STATUSES = ("todo", "testing", "confirmed", "clear", "skip")
 
 
 def now() -> str:
