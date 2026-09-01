@@ -10,6 +10,10 @@ from typing import Iterable, List, Optional
 
 from . import findings as findings_mod
 from . import scan as scan_mod
+from . import playbooks as pb_mod
+from . import surface as surface_mod
+from . import bob as bob_mod
+from . import vrt as vrt_mod
 from . import programs, report, store, vrt
 from .scope import IN_SCOPE, NOT_LISTED, OUT_OF_SCOPE, check
 
@@ -465,6 +469,218 @@ def cmd_submit(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- copiloto (assist / map / playbook)
+
+
+def _print_playbook(pb, full: bool = True) -> None:
+    entry = vrt_mod.get(pb.vrt)
+    prio = entry.priority_label if entry else "?"
+    print(paint(f"[{pb.id}] {pb.name}", "bold") + paint(f"   VRT: {prio}", "dim"))
+    print(f"  {pb.idea}")
+    if not full:
+        return
+    print(paint("  Que probar:", "green"))
+    for i, step in enumerate(pb.steps, 1):
+        print(f"    {i}. {step}")
+    if pb.escalation:
+        print(paint("  Como sube la prioridad:", "yellow"))
+        for e in pb.escalation:
+            print(f"    - {e}")
+    print(paint(f"  VRT sugerido: {pb.vrt}", "dim"))
+    print(paint("  Recuerda: esto se prueba A MANO y solo dentro de scope.", "dim"))
+
+
+def cmd_assist(args: argparse.Namespace) -> int:
+    context = " ".join(args.context).strip()
+    if not context:
+        return err("dime que estas mirando, p.ej.: hdb assist 'endpoint /api/orders/123 tras login'")
+
+    # Si es una URL, valida scope y extrae parametros para afinar la sugerencia.
+    if "." in context and " " not in context and "/" in context.replace("://", ""):
+        with store.session() as conn:
+            if args.program:
+                slug = pick_program(conn, args.program)
+                if slug:
+                    rules = programs.rules_for(conn, slug)
+                    verdict = check(context, rules, slug)
+                    _print_verdict(verdict)
+                    if verdict.status == OUT_OF_SCOPE:
+                        print(paint("Ese target esta fuera de scope: no lo pruebes.", "red"))
+                        return 1
+        ep = surface_mod._analyze(context if "://" in context else "https://" + context)
+        if ep.params:
+            print(paint(f"Parametros detectados: {', '.join(ep.params)}", "dim"))
+        context = context + " " + " ".join(ep.params) + " " + " ".join(ep.hints)
+
+    recs = pb_mod.recommend(context, limit=args.limit)
+    if not recs:
+        print("No tengo una sugerencia especifica. Playbooks disponibles: hdb playbook list")
+        print("Empieza por lo universal: crea dos cuentas y prueba IDOR (hdb playbook show idor).")
+        return 0
+    print(paint("Copiloto — que probarias aqui, en orden de relevancia:\n", "bold"))
+    for i, pb in enumerate(recs):
+        _print_playbook(pb, full=(i == 0 or args.full))
+        print()
+    if not args.full and len(recs) > 1:
+        print(paint("Detalle de todos: hdb assist ... --full  |  uno concreto: hdb playbook show <id>", "dim"))
+    return 0
+
+
+def cmd_map(args: argparse.Namespace) -> int:
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        rules = programs.rules_for(conn, slug)
+        if not rules:
+            return err(f"el programa {slug} no tiene targets guardados (ejecuta: hdb sync)")
+        verdict = check(args.url, rules, slug)
+        if verdict.status != IN_SCOPE:
+            _print_verdict(verdict)
+            return err("el objetivo no esta confirmado in-scope; no lo mapeo.")
+
+    print(paint("Mapeo de superficie (solo lectura: home, robots, sitemap, JS)\n", "dim"))
+    sm = surface_mod.build(args.url, same_host_only=not args.cross_host, delay=args.delay, timeout=args.timeout)
+    for n in sm.notes:
+        print(paint(f"  {n}", "dim"))
+    if not sm.endpoints and not sm.js_files:
+        print("Sin superficie extraible.")
+        return 0
+
+    interesting = [e for e in sm.endpoints if e.hints]
+    print(paint(f"\nEndpoints con pistas ({len(interesting)}):", "bold"))
+    for ep in interesting:
+        tags = ", ".join(sorted(ep.hints))
+        params = f"  params: {', '.join(ep.params)}" if ep.params else ""
+        print(f"  {ep.url}")
+        print(paint(f"      -> probar: {tags}{params}", "green"))
+    others = [e for e in sm.endpoints if not e.hints]
+    if others and args.all:
+        print(paint(f"\nOtros endpoints ({len(others)}):", "dim"))
+        for ep in others:
+            print(f"  {ep.url}")
+    if sm.js_files:
+        print(paint(f"\nFicheros JS para revisar a mano ({len(sm.js_files)}):", "bold"))
+        for js in sm.js_files:
+            print(f"  {js}")
+        print(paint("      busca en ellos claves, endpoints internos y tokens (playbook 'secrets').", "dim"))
+    print(paint(f"\nSiguiente: hdb assist '<url de arriba>' -p {slug}", "dim"))
+    return 0
+
+
+def cmd_playbook_list(args: argparse.Namespace) -> int:
+    for pb in pb_mod.PLAYBOOKS:
+        _print_playbook(pb, full=False)
+        print()
+    print(paint("Detalle: hdb playbook show <id>", "dim"))
+    return 0
+
+
+def cmd_playbook_show(args: argparse.Namespace) -> int:
+    try:
+        pb = pb_mod.by_id(args.id)
+    except KeyError:
+        return err(f"no existe el playbook '{args.id}'. Lista: hdb playbook list")
+    _print_playbook(pb, full=True)
+    return 0
+
+
+# --------------------------------------------------------------------------- BOB
+
+
+BOB = "\U0001F916 BOB"
+
+
+def cmd_bob_review(args: argparse.Namespace) -> int:
+    """BOB revisa la superficie in-scope y te avisa de los puntos criticos."""
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        rules = programs.rules_for(conn, slug)
+        if not rules:
+            return err(f"el programa {slug} no tiene targets guardados (ejecuta: hdb sync)")
+        verdict = check(args.url, rules, slug)
+        if verdict.status != IN_SCOPE:
+            _print_verdict(verdict)
+            return err("el objetivo no esta confirmado in-scope; BOB no lo revisa.")
+
+    print(paint(f"{BOB}: reviso {args.url} (solo lectura). Dame un momento...", "bold"))
+    surface = surface_mod.build(args.url, same_host_only=not args.cross_host, delay=args.delay, timeout=args.timeout)
+    scan_result = None
+    if not args.no_scan:
+        time.sleep(args.delay)
+        scan_result = scan_mod.scan_url(args.url, delay=args.delay, timeout=args.timeout, probe_cors=True)
+
+    rv = bob_mod.review(args.url, surface, scan_result)
+    for n in rv.notes:
+        print(paint(f"  {n}", "dim"))
+
+    if rv.quick_wins:
+        print(paint(f"\n{BOB}: config visible (de solo lectura, revisa si el programa la premia):", "bold"))
+        for qw in rv.quick_wins:
+            print(f"  - {qw}")
+
+    if not rv.critical_points:
+        print(paint(f"\n{BOB}: no vi puntos criticos automaticos. No significa que no haya bugs:", "yellow"))
+        print("  entra a mano y prueba IDOR y logica de negocio. hdb playbook list")
+        return 0
+
+    print(paint(f"\n{BOB}: revisa estos puntos, en orden. Cuando encuentres algo, avisame:", "bold"))
+    for i, cp in enumerate(rv.critical_points[: args.limit], 1):
+        pb = cp.playbook
+        print(paint(f"\n  {i}. {cp.where}", "red" if cp.weight >= 80 else "yellow"))
+        print(f"     {cp.why}")
+        print(paint(f"     playbook: hdb playbook show {pb.id}", "dim"))
+        print(paint(f"     si lo confirmas: hdb bob found {pb.id} -p {slug} --target \"{cp.where}\" --title \"...\"", "dim"))
+    print(paint(f"\n{BOB}: recuerda, yo solo señalo. El testing lo haces tu, a mano y en scope.", "dim"))
+    return 0
+
+
+def cmd_bob_found(args: argparse.Namespace) -> int:
+    """'Lo encontre': BOB registra el hallazgo y prepara el reporte."""
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        vrt_id = args.vrt
+        priority = args.priority
+        try:
+            pb = pb_mod.by_id(args.playbook)
+            if not vrt_id:
+                vrt_id = pb.vrt
+        except KeyError:
+            pb = None
+            if not vrt_id:
+                return err(f"'{args.playbook}' no es un playbook. Pasa --vrt o usa: hdb playbook list")
+        entry = vrt_mod.get(vrt_id) if vrt_id else None
+        if entry and priority is None:
+            priority = entry.priority
+
+        if args.target:
+            rules = programs.rules_for(conn, slug)
+            if rules:
+                verdict = check(args.target, rules, slug)
+                _print_verdict(verdict)
+                if verdict.status == OUT_OF_SCOPE and not args.force:
+                    return err("ese target esta fuera de scope. No lo reportes (o usa --force).")
+
+        notes = args.notes or ""
+        if pb and not notes:
+            notes = f"Clase: {pb.name}. Confirmado a mano siguiendo el playbook '{pb.id}'."
+        fid = findings_mod.create(conn, slug, args.title, vrt_id or "", priority, args.target or "", notes)
+        print(paint(f"{BOB}: hecho. Hallazgo #{fid} registrado en {slug}.", "bold"))
+        row = findings_mod.get(conn, fid)
+        body = report.render_finding(conn, row)
+
+    out = args.output or f"reporte-{fid}.md"
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    print(f"  reporte inicial: {out}")
+    print(paint(f"  {BOB}: rellena los pasos y el impacto, luego: hdb submit {fid} --check-securitytxt", "dim"))
+    return 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -586,6 +802,53 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output")
     p.add_argument("--check-securitytxt", action="store_true", help="busca el security.txt del target")
     p.set_defaults(func=cmd_submit)
+
+    p = sub.add_parser("assist", help="copiloto: dime que miras y te digo que probar (a mano)")
+    p.add_argument("context", nargs="+", help="una URL o una descripcion de lo que ves")
+    p.add_argument("-p", "--program", help="valida el scope si pasas una URL")
+    p.add_argument("--full", action="store_true", help="muestra los pasos de todos los playbooks sugeridos")
+    p.add_argument("--limit", type=int, default=4)
+    p.set_defaults(func=cmd_assist)
+
+    p = sub.add_parser("map", help="mapea la superficie in-scope de solo lectura y sugiere que probar")
+    p.add_argument("url")
+    p.add_argument("-p", "--program", required=True)
+    p.add_argument("--delay", type=float, default=1.0)
+    p.add_argument("--timeout", type=int, default=20)
+    p.add_argument("--all", action="store_true", help="incluye tambien los endpoints sin pistas")
+    p.add_argument("--cross-host", action="store_true", help="no limita al mismo host")
+    p.set_defaults(func=cmd_map)
+
+    play = sub.add_parser("playbook", help="checklists de testing manual por clase de bug").add_subparsers(dest="sub", required=True)
+    pl = play.add_parser("list", help="lista los playbooks")
+    pl.set_defaults(func=cmd_playbook_list)
+    ps = play.add_parser("show", help="detalle de un playbook")
+    ps.add_argument("id")
+    ps.set_defaults(func=cmd_playbook_show)
+
+    bob = sub.add_parser("bob", help="BOB, el copiloto: revisa puntos criticos y arma el reporte").add_subparsers(dest="sub", required=True)
+
+    br = bob.add_parser("review", help="BOB revisa la superficie in-scope y te avisa que probar")
+    br.add_argument("url")
+    br.add_argument("-p", "--program", required=True)
+    br.add_argument("--delay", type=float, default=1.0)
+    br.add_argument("--timeout", type=int, default=20)
+    br.add_argument("--limit", type=int, default=10)
+    br.add_argument("--no-scan", action="store_true", help="omite el escaneo pasivo de config")
+    br.add_argument("--cross-host", action="store_true")
+    br.set_defaults(func=cmd_bob_review)
+
+    bf = bob.add_parser("found", help="'lo encontre': registra el hallazgo y prepara el reporte")
+    bf.add_argument("playbook", help="id de playbook (idor, auth, ssrf...) o cualquier etiqueta si pasas --vrt")
+    bf.add_argument("-p", "--program", required=True)
+    bf.add_argument("--title", required=True)
+    bf.add_argument("--target")
+    bf.add_argument("--vrt", help="sobrescribe el VRT del playbook")
+    bf.add_argument("--priority", type=int, choices=[1, 2, 3, 4, 5])
+    bf.add_argument("--notes")
+    bf.add_argument("-o", "--output")
+    bf.add_argument("--force", action="store_true")
+    bf.set_defaults(func=cmd_bob_found)
 
     return parser
 

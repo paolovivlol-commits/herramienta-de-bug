@@ -126,6 +126,62 @@ hdb finding list --status triaged
 Estados: `draft`, `submitted`, `triaged`, `accepted`, `duplicate`,
 `not_applicable`, `resolved`.
 
+## BOB — el copiloto
+
+BOB es el asistente. **No ataca nada**: revisa la superficie in-scope de solo
+lectura, te avisa de los puntos que valen la pena probar a mano (ordenados por
+impacto potencial), y cuando le dices "lo encontré" te arma el reporte. El
+testing lo haces tú.
+
+### 1. BOB revisa y te avisa
+
+```bash
+hdb bob review https://app.tesla.com -p tesla
+```
+
+BOB combina el mapa de superficie y el escaneo pasivo, y te devuelve:
+
+- **Config visible** (cabeceras, cookies, CORS) que ya se ve sin explotar nada.
+- **Puntos críticos a probar**, ordenados por impacto: un endpoint con `id` →
+  IDOR; un `/login` → auth; un `?url=` → SSRF; un `?next=` → open redirect; los
+  ficheros JS → secretos. Cada uno enlaza a su playbook y al comando exacto para
+  reportarlo si lo confirmas.
+
+BOB se niega a revisar nada que no esté confirmado in-scope.
+
+### 2. Tú lo pruebas
+
+Abre el playbook del punto que BOB señaló y síguelo a mano:
+
+```bash
+hdb playbook show idor
+```
+
+### 3. "BOB, lo encontré" → reporte
+
+```bash
+hdb bob found idor -p tesla \
+  --target https://app.tesla.com/api/orders/123 \
+  --title "IDOR permite leer pedidos de otros usuarios"
+# 🤖 BOB: hecho. Hallazgo #1 registrado en tesla.
+#   reporte inicial: reporte-1.md
+```
+
+BOB hereda el VRT y la prioridad del playbook, valida que el target esté en
+scope, y genera el reporte. Rellenas los pasos y el impacto, y lo envías con
+`hdb submit`.
+
+### Consultarle sobre la marcha
+
+Mientras cazas, pregúntale a BOB qué probar en cualquier cosa que veas:
+
+```bash
+hdb assist "https://api.tesla.com/v1/orders/123?user_id=5"
+hdb assist "formulario de forgot password que manda un magic link"
+```
+
+Responde con los playbooks más relevantes y su checklist. Sin red, al instante.
+
 ## Verificar una página (scan)
 
 Verificación **de solo lectura** de un host in-scope. Hace peticiones GET/HEAD
