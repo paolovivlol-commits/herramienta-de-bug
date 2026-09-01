@@ -19,9 +19,14 @@ from typing import List, Optional
 from . import playbooks as pb_mod
 from .scan import ScanResult
 from .surface import SurfaceMap
+from .jsanalyze import JsReport
 
 # Cuanto "vale la pena" cada clase de bug (mayor = mas critico). Guia el orden
 # en el que BOB te presenta los puntos a revisar.
+# Etiquetas de secreto que casi nunca son un bug (publicas por diseño).
+LOW_RISK_SECRETS = {"Stripe Publishable", "Google API Key"}
+
+
 PRIORITY_WEIGHT = {
     "auth": 100, "pwreset": 95, "idor": 90, "ssrf": 85, "logic": 80,
     "upload": 70, "secrets": 65, "redirect": 40, "cors": 45,
@@ -49,7 +54,12 @@ class Review:
     notes: List[str] = field(default_factory=list)
 
 
-def review(target: str, surface: Optional[SurfaceMap], scan_result: Optional[ScanResult]) -> Review:
+def review(
+    target: str,
+    surface: Optional[SurfaceMap],
+    scan_result: Optional[ScanResult],
+    js_reports: Optional[List[JsReport]] = None,
+) -> Review:
     """Combina el mapa de superficie y el escaneo pasivo en una lista priorizada."""
     rv = Review(target=target)
     points: List[CriticalPoint] = []
@@ -77,6 +87,18 @@ def review(target: str, surface: Optional[SurfaceMap], scan_result: Optional[Sca
                     playbook_id="secrets",
                     why="Los JS suelen filtrar claves, endpoints internos y tokens.",
                     weight=PRIORITY_WEIGHT["secrets"],
+                )
+            )
+
+    for rep in js_reports or []:
+        for hit in rep.secrets:
+            weight = 60 if hit.label in LOW_RISK_SECRETS else 98
+            points.append(
+                CriticalPoint(
+                    where=f"{hit.label} en {rep.url}",
+                    playbook_id="secrets",
+                    why=f"{hit.value} — {hit.note}",
+                    weight=weight,
                 )
             )
 

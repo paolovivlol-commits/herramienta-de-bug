@@ -171,6 +171,25 @@ BOB hereda el VRT y la prioridad del playbook, valida que el target esté en
 scope, y genera el reporte. Rellenas los pasos y el impacto, y lo envías con
 `hdb submit`.
 
+### Buscar y señalar todo de un tiro: `bob hunt`
+
+El arranque de sesión. BOB busca por **toda** la superficie in-scope y te señala
+lo que vale la pena, en un solo comando:
+
+```bash
+hdb bob hunt https://app.tesla.com -p tesla
+```
+
+Encadena todo lo anterior:
+1. **Mapea** la superficie (home, robots, sitemap, endpoints, params, JS).
+2. **Escanea** la configuración visible (cabeceras, cookies, CORS).
+3. **Lee los ficheros JS** en busca de secretos y endpoints internos.
+4. **Prioriza** todo por impacto potencial y **siembra tu cuaderno**.
+
+Un secreto de alto riesgo (clave AWS, `sk_live_` de Stripe) sube a lo más alto
+de la lista; una clave pública (Google, Stripe *publishable*) baja. Sigue siendo
+todo **de solo lectura y solo in-scope** — BOB señala, tú confirmas.
+
 ### El cuaderno de caza
 
 Mientras pruebas, BOB te lleva la cuenta de qué falta y qué confirmaste.

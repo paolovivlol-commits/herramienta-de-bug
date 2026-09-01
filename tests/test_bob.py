@@ -57,3 +57,26 @@ def test_dedup_keeps_highest_weight():
     same = [c for c in rv.critical_points if c.where == "https://t.example/a"]
     assert len(same) == 1
     assert same[0].params == ["id"]
+
+
+def test_review_folds_js_secrets_as_critical_points():
+    from hdb.jsanalyze import JsHit, JsReport
+    rep = JsReport(url="https://t.example/app.js", fetched=True, size=10)
+    rep.hits = [
+        JsHit("secret", "AWS Access Key", "AKIA...aaaa", "critico"),
+        JsHit("secret", "Stripe Publishable", "pk_live...", "no suele ser bug"),
+    ]
+    rv = bob.review("https://t.example", None, None, [rep])
+    ids = [cp.playbook_id for cp in rv.critical_points]
+    assert ids and all(i == "secrets" for i in ids)
+    # el AWS (alto riesgo) va antes que el publishable (bajo riesgo)
+    assert "AWS Access Key" in rv.critical_points[0].where
+    assert rv.critical_points[0].weight > rv.critical_points[-1].weight
+
+
+def test_review_without_js_reports_still_works():
+    from hdb.surface import Endpoint, SurfaceMap
+    sm = SurfaceMap(base="https://t.example")
+    sm.endpoints = [Endpoint(url="https://t.example/login", hints={"auth"})]
+    rv = bob.review("https://t.example", sm, None)
+    assert rv.critical_points[0].playbook_id == "auth"

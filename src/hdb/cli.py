@@ -687,6 +687,66 @@ def cmd_bob_found(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bob_hunt(args: argparse.Namespace) -> int:
+    """BOB busca por toda la superficie in-scope y señala todo lo que vale la pena."""
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        rules = programs.rules_for(conn, slug)
+        if not rules:
+            return err(f"el programa {slug} no tiene targets guardados (ejecuta: hdb sync)")
+        verdict = check(args.url, rules, slug)
+        if verdict.status != IN_SCOPE:
+            _print_verdict(verdict)
+            return err("el objetivo no esta confirmado in-scope; BOB no lo caza.")
+
+    print(paint(f"{BOB}: cazando en {args.url} (solo lectura). Mapeo, escaneo config y leo los JS...", "bold"))
+
+    surface = surface_mod.build(args.url, same_host_only=not args.cross_host, delay=args.delay, timeout=args.timeout)
+    for n in surface.notes:
+        print(paint(f"  {n}", "dim"))
+
+    time.sleep(args.delay)
+    scan_result = scan_mod.scan_url(args.url, delay=args.delay, timeout=args.timeout, probe_cors=True)
+
+    js_reports = []
+    js_files = surface.js_files[: args.max_js]
+    if js_files:
+        print(paint(f"  leyendo {len(js_files)} fichero(s) JS...", "dim"))
+    for js in js_files:
+        # los JS salen del mismo host in-scope, pero revalidamos por si acaso
+        if check(js, rules, slug).status == OUT_OF_SCOPE:
+            continue
+        time.sleep(args.delay)
+        js_reports.append(js_mod.analyze_url(js, timeout=args.timeout))
+
+    rv = bob_mod.review(args.url, surface, scan_result, js_reports)
+
+    if rv.quick_wins:
+        print(paint(f"\n{BOB}: config visible (revisa si el programa la premia):", "bold"))
+        for qw in rv.quick_wins:
+            print(f"  - {qw}")
+
+    if not rv.critical_points:
+        print(paint(f"\n{BOB}: no vi puntos criticos automaticos. Entra a mano: IDOR y logica de negocio.", "yellow"))
+        return 0
+
+    print(paint(f"\n{BOB}: esto es lo que encontre, en orden de impacto. Pruebalo a mano:", "bold"))
+    for i, cp in enumerate(rv.critical_points[: args.limit], 1):
+        pb = cp.playbook
+        print(paint(f"\n  {i}. {cp.where}", "red" if cp.weight >= 80 else "yellow"))
+        print(f"     {cp.why}")
+        print(paint(f"     playbook: hdb playbook show {pb.id}", "dim"))
+
+    with store.session() as conn:
+        seeded = notes_mod.seed_from_points(conn, slug, rv.critical_points[: args.limit])
+    print(paint(f"\n{BOB}: {len(rv.critical_points)} punto(s) hallados; apunte {seeded} nuevos en tu cuaderno.", "green"))
+    print(paint(f"       velos con: hdb bob todo -p {slug}   |   al confirmar uno: hdb bob mark <id> confirmed", "dim"))
+    print(paint(f"{BOB}: yo solo señalo. El bug lo confirmas tu, a mano y en scope.", "dim"))
+    return 0
+
+
 # --------------------------------------------------------------------------- BOB: cuaderno y JS
 
 
@@ -951,6 +1011,16 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--no-scan", action="store_true", help="omite el escaneo pasivo de config")
     br.add_argument("--cross-host", action="store_true")
     br.set_defaults(func=cmd_bob_review)
+
+    bh = bob.add_parser("hunt", help="busca por toda la superficie in-scope y señala todo (review + js + cuaderno)")
+    bh.add_argument("url")
+    bh.add_argument("-p", "--program", required=True)
+    bh.add_argument("--delay", type=float, default=1.0)
+    bh.add_argument("--timeout", type=int, default=20)
+    bh.add_argument("--limit", type=int, default=15)
+    bh.add_argument("--max-js", type=int, default=10, help="maximo de ficheros JS a leer")
+    bh.add_argument("--cross-host", action="store_true")
+    bh.set_defaults(func=cmd_bob_hunt)
 
     bf = bob.add_parser("found", help="'lo encontre': registra el hallazgo y prepara el reporte")
     bf.add_argument("playbook", help="id de playbook (idor, auth, ssrf...) o cualquier etiqueta si pasas --vrt")
