@@ -126,6 +126,59 @@ hdb finding list --status triaged
 Estados: `draft`, `submitted`, `triaged`, `accepted`, `duplicate`,
 `not_applicable`, `resolved`.
 
+## Verificar una página (scan)
+
+Verificación **de solo lectura** de un host in-scope. Hace peticiones GET/HEAD
+como las de un navegador y observa la configuración; **no inyecta payloads, no
+fuerza nada, no envía tráfico destructivo** — justo lo que casi todos los
+programas de Bugcrowd permiten (el escaneo agresivo y la inyección suelen estar
+prohibidos en las reglas).
+
+```bash
+hdb scan app.tesla.com api.tesla.com -p tesla --delay 1 --save
+```
+
+Guardarraíles que **no se pueden desactivar**:
+
+- Solo escanea hosts que el motor de scope confirme **in-scope**. Lo que esté
+  fuera de scope o no listado se **salta automáticamente** y te lo dice.
+- Solo métodos de lectura (GET/HEAD), forzado en el código.
+- Rate limit obligatorio entre peticiones (`--delay`, 1s por defecto).
+
+Qué comprueba, y a qué VRT mapea cada hallazgo:
+
+| Check | VRT | Prioridad típica |
+|-------|-----|------------------|
+| Cabeceras de seguridad ausentes (HSTS, CSP, X-Frame-Options, X-Content-Type-Options) | `server_security_misconfiguration.lack_of_security_headers.*` | P5 |
+| Clickjacking (sin protección de frame) | `server_security_misconfiguration.clickjacking.*` | P4–P5 |
+| Cookies sin Secure/HttpOnly | `server_security_misconfiguration.missing_secure_or_httponly_cookie_flag.*` | P4–P5 |
+| CORS que refleja un Origin arbitrario | `server_security_misconfiguration.unsafe_cross_origin_resource_sharing` | P3–P4 |
+| Contenido mixto (HTTP en página HTTPS) | `sensitive_data_exposure.mixed_content` | P5 |
+| Divulgación de versión de servidor | `server_security_misconfiguration.fingerprinting_banner_disclosure.software_version_in_response_headers` | P5 |
+| HTTP sin redirigir a HTTPS | `insecure_data_transport.cleartext_transmission_of_sensitive_data` | varies |
+
+Con `--save`, cada hallazgo entra como `finding` para su seguimiento. **Son un
+punto de partida, no un envío en un clic**: revisa cada uno a mano, descarta lo
+que el programa marque como no elegible (muchos consideran los P5 de cabeceras
+fuera de recompensa) y sube de prioridad lo que de verdad tenga impacto.
+
+## Enviar a la empresa
+
+En Bugcrowd el reporte se envía **por la plataforma**, que es el canal válido y
+con protección legal (safe harbor). La herramienta prepara el paquete y te
+muestra el canal; **el clic de enviar lo das tú**:
+
+```bash
+hdb submit 5 --check-securitytxt
+# Paquete de envio preparado (no se ha enviado nada).
+#   reporte:  reporte-5.md
+# Canal oficial de envio:
+#   Bugcrowd: https://bugcrowd.com/engagements/tesla
+```
+
+No manda correos automáticos: enviar reportes no solicitados por email a una
+empresa es la forma más rápida de que te cierren la cuenta o algo peor.
+
 ## Programas privados
 
 Los programas privados no están en el dataset público. Pega su scope a mano:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import time
 import sys
 from typing import Iterable, List, Optional
 
 from . import findings as findings_mod
+from . import scan as scan_mod
 from . import programs, report, store, vrt
 from .scope import IN_SCOPE, NOT_LISTED, OUT_OF_SCOPE, check
 
@@ -354,6 +356,115 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- scan
+
+
+GUARDRAILS = (
+    "Guardarrailes activos: solo peticiones de lectura (GET/HEAD), solo hosts "
+    "in-scope, con rate limit. No inyecta payloads ni fuerza nada."
+)
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    with store.session() as conn:
+        slug = pick_program(conn, args.program)
+        if not slug:
+            return 2
+        rules = programs.rules_for(conn, slug)
+        if not rules:
+            return err(f"el programa {slug} no tiene targets guardados (ejecuta: hdb sync)")
+
+        targets = args.targets or read_lines(None)
+        if not targets:
+            return err("no hay urls que escanear")
+
+        print(paint(GUARDRAILS, "dim"))
+        scanned = skipped = saved = 0
+        worst_priority = 6
+        for raw in targets:
+            verdict = check(raw, rules, slug)
+            if verdict.status != IN_SCOPE:
+                skipped += 1
+                label = STATUS_TEXT[verdict.status]
+                print(paint(f"SALTADO   {raw}  ({label}: {verdict.reason()})", "yellow"))
+                continue
+            print(paint(f"\nescaneando {raw} ...", "bold"))
+            result = scan_mod.scan_url(raw, delay=args.delay, timeout=args.timeout, probe_cors=not args.no_cors)
+            for note in result.notes:
+                print(paint(f"  {note}", "dim"))
+            if not result.reachable:
+                continue
+            scanned += 1
+            if not result.issues:
+                print(paint("  sin hallazgos automaticos (revisa a mano la logica de negocio)", "green"))
+            for issue in result.issues:
+                color = "red" if issue.priority in (1, 2, 3) else "dim"
+                print("  " + paint(issue.as_line(), color))
+                print(paint(f"      {issue.evidence}", "dim"))
+                if issue.priority is not None:
+                    worst_priority = min(worst_priority, issue.priority)
+                if args.save:
+                    fid = findings_mod.create(
+                        conn, slug, issue.title, issue.vrt_id, issue.priority, issue.url,
+                        notes=f"Detectado por hdb scan.\nEvidencia: {issue.evidence}\nRemediacion: {issue.recommendation}",
+                    )
+                    saved += 1
+                    print(paint(f"      -> guardado como hallazgo #{fid}", "green"))
+            time.sleep(args.delay)
+
+        msg = f"\n{scanned} host(s) escaneados, {skipped} saltados fuera de scope"
+        if args.save:
+            msg += f", {saved} hallazgos guardados"
+        print(paint(msg, "dim"))
+        if saved:
+            print(paint("Revisa cada hallazgo antes de reportar: hdb finding list -p " + slug, "dim"))
+    return 0
+
+
+# --------------------------------------------------------------------------- submit
+
+
+def cmd_submit(args: argparse.Namespace) -> int:
+    """Prepara el paquete de envio y muestra el canal oficial. NO envia nada."""
+    with store.session() as conn:
+        row = findings_mod.get(conn, args.id)
+        if row is None:
+            return err(f"no existe el hallazgo #{args.id}")
+        prog = programs.get_program(conn, row["program_slug"])
+        body = report.render_finding(conn, row)
+
+    out = args.output or f"reporte-{args.id}.md"
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(body)
+
+    print(paint("Paquete de envio preparado (no se ha enviado nada).", "bold"))
+    print(f"  reporte:  {out}")
+    print(paint("\nCanal oficial de envio:", "bold"))
+    if prog and prog["url"]:
+        print(f"  Bugcrowd: {prog['url']}")
+        print("            Sube el reporte por la plataforma; es el canal valido y protegido.")
+    else:
+        print("  (programa sin URL guardada) Envia por el canal oficial del programa en Bugcrowd.")
+    host = ""
+    if row["target"]:
+        from urllib.parse import urlsplit
+        host = urlsplit(row["target"] if "://" in row["target"] else "//" + row["target"]).netloc
+    if args.check_securitytxt and host:
+        print(paint("\nBuscando security.txt del target...", "dim"))
+        txt = scan_mod.fetch_security_txt(host)
+        if txt:
+            print("  security.txt encontrado (contacto declarado por la empresa):")
+            for line in txt.splitlines():
+                if line.strip().lower().startswith(("contact", "policy", "encryption")):
+                    print(f"    {line.strip()}")
+        else:
+            print("  sin security.txt: usa el canal de Bugcrowd.")
+    print(paint(
+        "\nAntes de enviar, revisa el reporte a mano: los hallazgos automaticos son un "
+        "punto de partida, no un envio en un clic.", "yellow"))
+    return 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -460,6 +571,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", type=int)
     p.add_argument("-o", "--output", help="fichero de salida")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("scan", help="verifica una pagina con checks pasivos de solo lectura (in-scope)")
+    p.add_argument("targets", nargs="*", help="urls o hosts; si se omite, lee de stdin")
+    p.add_argument("-p", "--program", required=True, help="programa contra cuyo scope se valida")
+    p.add_argument("--delay", type=float, default=1.0, help="segundos entre peticiones (rate limit)")
+    p.add_argument("--timeout", type=int, default=20)
+    p.add_argument("--no-cors", action="store_true", help="omite la prueba de CORS")
+    p.add_argument("--save", action="store_true", help="guarda cada hallazgo para seguimiento")
+    p.set_defaults(func=cmd_scan)
+
+    p = sub.add_parser("submit", help="prepara el paquete de un hallazgo y muestra el canal oficial (no envia)")
+    p.add_argument("id", type=int)
+    p.add_argument("-o", "--output")
+    p.add_argument("--check-securitytxt", action="store_true", help="busca el security.txt del target")
+    p.set_defaults(func=cmd_submit)
 
     return parser
 
