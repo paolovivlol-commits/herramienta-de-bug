@@ -424,6 +424,29 @@ hdb program import cliente-privado --name "Cliente Privado" --in-scope in.txt --
 
 A partir de ahí funciona igual que cualquier otro programa.
 
+
+## Windows
+
+hdb funciona en Windows (Python puro, sin dependencias del sistema). Instala con
+el mismo comando y ejecútalo como `hdb ...` (o `python -m hdb ...`):
+
+```powershell
+pip install -e .
+hdb sync
+hdb bob hunt https://app.ejemplo.com -p ejemplo
+```
+
+Detalles específicos de Windows:
+- La consola se configura sola en UTF-8, así que los acentos y el emoji de BOB
+  no rompen nada en cmd.exe ni PowerShell. Si tu terminal no renderiza el emoji,
+  ejecuta con `HDB_ASCII=1` para usar `BOB` en texto plano.
+- Los colores se activan en Windows 10+ automáticamente; en consolas antiguas se
+  desactivan solos. Fuérzalo apagado con `HDB_NO_COLOR=1` (o la estándar `NO_COLOR`).
+- Los datos viven en `%USERPROFILE%\.hdb` (equivalente a `~/.hdb`). Cámbialo con
+  la variable `HDB_HOME`.
+- Para el juez gratis con Ollama, instala Ollama para Windows y usa
+  `--backend ollama` igual que en Linux/Mac.
+
 ## Tests
 
 ```bash

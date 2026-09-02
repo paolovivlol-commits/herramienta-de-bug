@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import time
 import sys
@@ -25,9 +26,47 @@ COLORS = {"green": "\033[32m", "red": "\033[31m", "yellow": "\033[33m", "dim": "
 STATUS_COLOR = {IN_SCOPE: "green", OUT_OF_SCOPE: "red", NOT_LISTED: "yellow"}
 STATUS_TEXT = {IN_SCOPE: "IN-SCOPE", OUT_OF_SCOPE: "OUT-OF-SCOPE", NOT_LISTED: "NO-LISTADO"}
 
+# Se desactiva en consolas que no entienden secuencias ANSI (cmd.exe antiguo).
+_COLOR_ENABLED = True
+
+
+def setup_console() -> None:
+    """Prepara la consola para Windows: UTF-8 y colores ANSI.
+
+    En Windows la consola usa cp1252 por defecto, asi que imprimir emoji o
+    acentos puede lanzar UnicodeEncodeError y tumbar el programa. Forzamos UTF-8
+    (con reemplazo por si acaso) y, en Windows 10+, habilitamos las secuencias
+    ANSI; si no se puede, apagamos el color en vez de escupir basura.
+    """
+    global _COLOR_ENABLED
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    if os.environ.get("HDB_NO_COLOR") or os.environ.get("NO_COLOR"):
+        _COLOR_ENABLED = False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            enabled = False
+            for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+                handle = kernel32.GetStdHandle(handle_id)
+                mode = ctypes.c_uint32()
+                if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+                    kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+                    enabled = True
+            if not enabled:
+                _COLOR_ENABLED = False
+        except Exception:
+            _COLOR_ENABLED = False
+
 
 def paint(text: str, color: str) -> str:
-    if not sys.stdout.isatty() or color not in COLORS:
+    if not _COLOR_ENABLED or not sys.stdout.isatty() or color not in COLORS:
         return text
     return f"{COLORS[color]}{text}\033[0m"
 
@@ -592,7 +631,8 @@ def cmd_playbook_show(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- BOB
 
 
-BOB = "\U0001F916 BOB"
+# Emoji por defecto; en consolas sin soporte (o con HDB_ASCII=1) cae a texto.
+BOB = "BOB" if os.environ.get("HDB_ASCII") else "\U0001F916 BOB"
 
 
 def cmd_bob_review(args: argparse.Namespace) -> int:
@@ -1349,6 +1389,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
+    setup_console()
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
